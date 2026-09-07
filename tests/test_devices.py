@@ -27,8 +27,8 @@ def test_battery_from_status_uses_top_two_bits():
 def test_battery_only_device_is_valid():
     """An FMIP device whose owner doesn't share location: normal, not an error."""
     device = Device(
-        id="x",
-        name="Her iPhone",
+        upstream_id="x",
+        display_name="Her iPhone",
         kind=Kind.IDEVICE,
         source=Source.FMIP,
         owner="jane",
@@ -46,8 +46,8 @@ def test_battery_only_device_is_valid():
 
 def test_serialize_materialises_computed_fields():
     device = Device(
-        id="k",
-        name="Keys",
+        upstream_id="k",
+        display_name="Keys",
         kind=Kind.ACCESSORY,
         source=Source.FINDMY,
         owner="jane",
@@ -63,8 +63,8 @@ def test_serialize_materialises_computed_fields():
 
 def test_naive_timestamps_are_treated_as_utc():
     device = Device(
-        id="k",
-        name="Keys",
+        upstream_id="k",
+        display_name="Keys",
         kind=Kind.ACCESSORY,
         source=Source.FINDMY,
         owner="jane",
@@ -201,15 +201,41 @@ def test_registry_value_with_unsafe_slug_is_cleaned():
     assert (owner, device) == ("janes", "keys-1")
 
 
-def test_slug_is_internal_not_serialized():
-    """Derived from owner+device, which are what consumers get."""
-    device = Device(
-        id="x", name="Keys", kind=Kind.ACCESSORY, source=Source.FINDMY, owner="jane", device="keys"
-    )
-    assert device.slug == "jane/keys"
-    wire = device.serialize()
+def _device(**kw):
+    base = {
+        "upstream_id": "2006~#0064",
+        "display_name": "John’s Keys",
+        "kind": Kind.ACCESSORY,
+        "source": Source.FINDMY,
+        "owner": "jane",
+        "device": "keys",
+    }
+    return Device(**{**base, **kw})
+
+
+def test_id_is_the_addressable_slug():
+    """`id` is what consumers key on, and it is the owner/device pair."""
+    wire = _device().serialize()
+    assert wire["id"] == "jane/keys"
+    # The halves stay on the wire: a consumer building `findmy/jane/keys/...`
+    # should not have to split the id back apart.
     assert (wire["owner"], wire["device"]) == ("jane", "keys")
-    assert "slug" not in wire
+
+
+def test_id_cannot_be_overridden_to_disagree_with_its_halves():
+    """Derived, not passed in, so no caller can desynchronise the two."""
+    assert _device(id="something/else").id == "jane/keys"
+
+
+def test_apple_identifier_is_carried_but_not_as_id():
+    """Apple's string is opaque and hostile to topics; it must not be `id`."""
+    wire = _device().serialize()
+    assert wire["upstream_id"] == "2006~#0064"
+    assert "#" not in wire["id"]
+
+
+def test_display_name_carries_apples_freeform_name():
+    assert _device().serialize()["display_name"] == "John’s Keys"
 
 
 def test_apostrophe_variants_slug_identically():
@@ -276,7 +302,13 @@ async def test_wait_blocks_for_the_refresh(tmp_path, monkeypatch):
 
 def _battery(**kw):
     return Device(
-        id="x", name="n", kind=Kind.ACCESSORY, source=Source.FINDMY, owner="o", device="d", **kw
+        upstream_id="x",
+        display_name="n",
+        kind=Kind.ACCESSORY,
+        source=Source.FINDMY,
+        owner="o",
+        device="d",
+        **kw,
     ).serialize()
 
 

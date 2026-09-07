@@ -88,8 +88,8 @@ class AccessoryBackend:
             filename_stem=self._stems.get(id(accessory)),
         )
         device = Device(
-            id=accessory.identifier,
-            name=name,
+            upstream_id=accessory.identifier,
+            display_name=name,
             kind=Kind.ACCESSORY,
             source=Source.FINDMY,
             owner=owner,
@@ -228,7 +228,9 @@ class AccessoryBackend:
             self.health.refreshing = False
             return self._cache
 
-        previous = {device.id: device for device in self._cache}
+        # Keyed by upstream_id, because the lookup below has an accessory in hand
+        # and only its Apple identifier to match on -- not the owner/device slug.
+        previous = {device.upstream_id: device for device in self._cache}
         devices = []
         for accessory in self._accessories:
             if accessory not in selected:

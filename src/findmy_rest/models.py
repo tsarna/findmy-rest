@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from itertools import pairwise
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from . import __version__
 
@@ -56,20 +56,37 @@ class Source(str, Enum):
 
 
 class Device(BaseModel):
-    # Apple's own identifier. Opaque and unusable as a topic segment, filename or
-    # label -- it contains `#`, `/`, and characters like `§`. Kept for correlation
-    # against Find My, never for addressing.
-    id: str
-    # Apple's display name: freeform, may contain emoji, typographic apostrophes
-    # and non-breaking spaces.
-    name: str
-    kind: Kind
-    source: Source
+    # The addressable identity, `<owner>/<device>`. Both halves are slugs
+    # ([a-z0-9-]), so this is safe in an MQTT topic, a filename, a URL or a
+    # metric label, and it survives a rename in Find My.
+    #
+    # This is `id` because it is the identifier consumers should key on. The
+    # field previously here -- Apple's opaque string -- is `upstream_id` below:
+    # naming that one `id` invited exactly the mistake its own docs had to warn
+    # against on the next line.
+    #
+    # Set in __init__ rather than stored, so it cannot drift from its halves.
+    id: str = ""
 
-    # The addressable identity. Both are slugs ([a-z0-9-]), so `<owner>/<device>`
-    # is safe in an MQTT topic, a filename, a URL or a metric label.
     owner: str
     device: str
+
+    # Apple's own identifier: opaque, and unusable as a topic segment, filename
+    # or label -- it contains `#`, `/` and characters like `§`. Kept for
+    # correlation against Find My and for registry lookups, never for addressing.
+    #
+    # `upstream_id` rather than `apple_id` because this project already uses
+    # "Apple ID" for the iCloud *account* it authenticates as
+    # (FINDMY_REST_APPLE_ID), which is an entirely different thing. It pairs with
+    # `source`, which says which upstream produced the record.
+    upstream_id: str
+
+    # Apple's display name: freeform, may contain emoji, typographic apostrophes
+    # and non-breaking spaces. For humans reading a dashboard, not for addressing.
+    display_name: str
+
+    kind: Kind
+    source: Source
 
     # TPV-named location fields, all optional.
     lat: float | None = None
@@ -90,15 +107,17 @@ class Device(BaseModel):
     confidence: int | None = Field(default=None, description="FindMy.py report confidence, 1-3")
     device_status: str | None = Field(default=None, description="FMIP status, mapped")
 
-    @property
-    def slug(self) -> str:
-        """`<owner>/<device>`, for logs and messages.
+    @model_validator(mode="after")
+    def _derive_id(self) -> Device:
+        """Keep `id` exactly `<owner>/<device>`.
 
-        Deliberately *not* serialized: it is derived from two fields that are, and
-        consumers building topics want the segments separately anyway. Adding a
-        field later is backward-compatible; removing one is not.
+        Derived rather than passed in, so no caller can construct a device whose
+        id disagrees with the halves it is built from. The halves stay on the
+        wire too: consumers building topic segments would otherwise have to split
+        the id back apart.
         """
-        return f"{self.owner}/{self.device}"
+        self.id = f"{self.owner}/{self.device}"
+        return self
 
     @property
     def has_location(self) -> bool:

@@ -20,12 +20,13 @@ exists, so the output drops into consumers that already speak that vocabulary:
 ```json
 [
   {
-    "id": "2006~#0000000000000000~#EXAMPLE00SER",
-    "name": "Jane\u2019s Keys",
-    "kind": "accessory",
-    "source": "findmy",
+    "id": "jane/keys",
     "owner": "jane",
     "device": "keys",
+    "upstream_id": "2006~#0000000000000000~#EXAMPLE00SER",
+    "display_name": "Jane\u2019s Keys",
+    "kind": "accessory",
+    "source": "findmy",
     "lat": 37.235,
     "lon": -115.8111,
     "time": "2026-09-06T21:14:33Z",
@@ -39,10 +40,13 @@ exists, so the output drops into consumers that already speak that vocabulary:
 ]
 ```
 
-Address devices by **`owner`/`device`**, never by `id` or `name`: Apple's
-identifiers contain `#` (an MQTT wildcard), `/` and `§`, and names carry emoji and
-typographic punctuation. Slugs come from a registry file or the `<owner>.<device>.json`
-key filename, so they survive renames in Find My. See [docs/api.md](docs/api.md).
+**`id` is the address**, and it is `<owner>/<device>` — both slugs, so it drops
+straight into an MQTT topic, a filename or a metric label, and it survives a rename in
+Find My. The halves are published separately too, so building `findmy/jane/keys/…`
+needs no string surgery. Apple's own identifier (`upstream_id`) and display name
+(`display_name`) are carried for correlation and for humans, but neither is usable as
+an address: the first contains `#`, `/` and `§`, the second carries emoji and
+typographic punctuation. See [docs/api.md](docs/api.md).
 
 `lat`, `lon` and `time` are **optional**. An iCloud device whose owner does not share
 location returns battery only; that is a normal steady state, not an error. Consumers

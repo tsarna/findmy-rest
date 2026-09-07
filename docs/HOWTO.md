@@ -53,7 +53,7 @@ which it rate-limits. It is a few megabytes. Give it a real volume.
 ```yaml
 services:
   findmy-rest:
-    image: ghcr.io/tsarna/findmy-rest:0.1.0
+    image: ghcr.io/tsarna/findmy-rest:0.2.0
     ports:
       - "8080:8080"
     environment:
@@ -137,7 +137,7 @@ restored on every restart.
 ## 4. Read it
 
 ```console
-$ curl -s localhost:8080/devices | jq -r '.[] | "\(.owner)/\(.device)  \(.battery_level)"'
+$ curl -s localhost:8080/devices | jq -r '.[] | "\(.id)  \(.battery_level)"'
 jane/keys      medium
 jane/purse     full
 john/luggage   full

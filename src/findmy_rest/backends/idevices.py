@@ -57,8 +57,8 @@ class FmipBackend:
         # No file to name these, so the registry is the only explicit source.
         owner, device_slug = self._settings.identify(name=name, apple_id=apple_id)
         return Device(
-            id=apple_id,
-            name=name,
+            upstream_id=apple_id,
+            display_name=name,
             kind=Kind.IDEVICE,
             source=Source.FMIP,
             owner=owner,

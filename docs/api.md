@@ -16,48 +16,103 @@ TPV](https://gpsd.gitlab.io/gpsd/gpsd_json.html) wherever an equivalent exists, 
 flows into consumers that already speak that vocabulary without translation. Fields with
 no TPV equivalent keep their own names.
 
-| Field | Type | Source | Notes |
-|---|---|---|---|
-| `id` | string | both | Apple's own identifier. Opaque — **not addressable**, see below |
-| `name` | string | both | Apple's display name; freeform, may contain emoji |
-| `kind` | `accessory` \| `idevice` | both | what sort of thing it is |
-| `source` | `findmy` \| `fmip` | both | which backend produced this record |
-| `owner` | slug | both | who carries it, e.g. `jane` |
-| `device` | slug | both | which of theirs, e.g. `keys` |
-| `lat` | float | both | **optional** — see below |
-| `lon` | float | both | **optional** |
-| `alt` | float | fmip | altitude, metres |
-| `time` | ISO 8601 UTC | both | when the fix was *recorded*, not when it was fetched |
-| `eph` | float | both | horizontal error, metres |
-| `epv` | float | fmip | vertical error, metres |
-| `battery_level` | `full` \| `medium` \| `low` \| `critical` | both | accessories: bits 6–7 of the status byte. iCloud devices: bucketed from `battery_pct` |
-| `battery_pct` | int 0–100 | both | iCloud devices: measured. Accessories: **derived** from the level, see below |
-| `battery_estimated` | bool | both | true when `battery_pct` was derived rather than measured |
-| `status_raw` | int | findmy | raw accessory status byte, unmodified |
-| `confidence` | int | findmy | Apple's confidence in the fix. FindMy.py documents 1–3, but **0 occurs in practice** — do not validate against that range |
-| `device_status` | `online` \| `offline` \| `pending` \| `unregistered` | fmip | mapped from FMIP's numeric status |
-| `has_location` | bool | both | computed; always present |
-| `location_age_s` | float | both | computed; seconds since `time`, absent when there is no fix |
+In the **TPV** column below: **✓** is a standard TPV field carrying its standard
+meaning, **·** is ours, and **⚠** is a TPV field *name* used with a different meaning
+here.
+
+| Field | Type | TPV | Source | Notes |
+|---|---|---|---|---|
+| `id` | slug pair | · | both | **the addressable identity**, `<owner>/<device>`, e.g. `jane/keys`. Fills TPV's `device` role — see below |
+| `owner` | slug | · | both | who carries it, e.g. `jane` |
+| `device` | slug | ⚠ | both | which of theirs, e.g. `keys`. Shares a name with TPV's `device`, which is the *originating GPS receiver* (`/dev/ttyUSB0`) — see below |
+| `upstream_id` | string | · | both | Apple's own opaque identifier, for correlation and registry lookups. **Not addressable.** Not called `apple_id`, which in this project means the iCloud *account* (`FINDMY_REST_APPLE_ID`) |
+| `display_name` | string | · | both | Apple's display name; freeform, may contain emoji. For humans, not for addressing |
+| `kind` | `accessory` \| `idevice` | · | both | what sort of thing it is |
+| `source` | `findmy` \| `fmip` | · | both | which backend produced this record |
+| `lat` | float | ✓ | both | **optional** — see below |
+| `lon` | float | ✓ | both | **optional** |
+| `alt` | float | ✓ | fmip | altitude, metres. TPV deprecates `alt` for `altHAE`/`altMSL`; Apple does not say which datum it means, so neither do we |
+| `time` | ISO 8601 UTC | ✓ | both | when the fix was *recorded*, not when it was fetched |
+| `eph` | float | ✓ | both | horizontal error, metres |
+| `epv` | float | ✓ | fmip | vertical error, metres |
+| `battery_level` | `full` \| `medium` \| `low` \| `critical` | · | both | accessories: bits 6–7 of the status byte. iCloud devices: bucketed from `battery_pct` |
+| `battery_pct` | int 0–100 | · | both | iCloud devices: measured. Accessories: **derived** from the level, see below |
+| `battery_estimated` | bool | · | both | true when `battery_pct` was derived rather than measured |
+| `status_raw` | int | · | findmy | raw accessory status byte, unmodified. Carries a device type as well as the battery level — see below |
+| `confidence` | int | · | findmy | Apple's confidence in the fix. FindMy.py documents 1–3, but **0 occurs in practice** — do not validate against that range |
+| `device_status` | `online` \| `offline` \| `pending` \| `unregistered` | · | fmip | mapped from FMIP's numeric status |
+| `has_location` | bool | · | both | computed; always present |
+| `location_age_s` | float | · | both | computed; seconds since `time`, absent when there is no fix |
 
 Null fields are omitted rather than sent as `null`, so absence is the signal.
 
-### Identity: use `owner`/`device`, never `id` or `name`
+### Why the rest have no TPV name
 
-Neither field Apple gives us can be used as an MQTT topic segment, a filename or a
-metric label:
+Not for want of looking: **GPSD's schema has no representation at all** — in TPV or in
+any other object — for battery level, for a device being online or unreachable, or for
+the age of a piece of data (`dgpsAge` is specific to DGPS corrections). GPSD describes
+a GPS receiver attached to the machine, which is always powered and always present, so
+the questions this API exists to answer are ones it never had to ask. Those fields are
+necessarily ours.
 
-- **`id`** contains `#` — an MQTT *multi-level wildcard* — plus `/`, `§` and `¶`. A real
-  one, with its identifying middle redacted: `a:/00000000-0000-0000-0000-...~#¶§§...`.
-  Publishing to a topic built from that would not merely look ugly, it would corrupt
-  routing.
-- **`name`** is freeform: `Jane’s Apple\xa0Watch` carries a typographic apostrophe and a
-  non-breaking space; accessories also have an emoji field, and names like `Kayak 🐬`
-  are normal.
+Three near-misses are worth naming, because they are the ones a consumer might
+otherwise expect:
 
-So every device carries an explicit `owner` and `device`, both slugs matching
-`^[a-z0-9][a-z0-9-]*$`, and `slug` is `<owner>/<device>` — safe in an MQTT topic, a
-filename, a URL path, or a metric label. `findmy/jane/keys/location` drops straight out
-of it.
+- **`has_location` is TPV's `mode` in boolean form.** `mode` is `0=unknown, 1=no fix,
+  2=2D, 3=3D`, and `has_location` is exactly `mode >= 2`. It is not emitted as `mode`
+  because we cannot honestly fill in the rest: an accessory report has no altitude, and
+  an iCloud device's altitude does not come with any statement of whether it was a real
+  3D fix, so choosing between `2` and `3` would be a guess wearing a standard field
+  name.
+- **`status` is deliberately avoided.** TPV's is a GNSS fix type (`1=Normal`, `2=DGPS`,
+  `3=RTK Fixed`…), which is nothing like Apple's status byte or an iCloud device's
+  reachability. Hence `status_raw` and `device_status`: a consumer that already reads
+  `status` from a real receiver will never be silently handed one of ours under a name
+  it thinks it understands. `confidence` is likewise not any of GPSD's error estimates —
+  it is Apple's own opaque number, and `eph` is where the metres live.
+- **`epx`/`epy` are absent** because Apple gives a single horizontal accuracy rather
+  than per-axis error, and `eph` is precisely the field for that.
+
+`device` shares a name with TPV's, and that is deliberate. Note what it is *not*: the
+`status` case above is a genuine hazard, because TPV's `status` is a small integer from
+a fixed enumeration and Apple's is a bit-packed byte — same name, incompatible values,
+so a transform written against one would silently misread the other. Nothing like that
+applies here. TPV's `device` is a string naming the device; ours is a string naming the
+device. Ours is merely *scoped* to an owner, with the fully-qualified form in `id` —
+which is the field actually filling TPV's role, since a whole tracker is `jane/keys`
+where TPV would have `/dev/ttyUSB0`.
+
+Renaming it would also desync the field from the `<owner>.<device>.json` convention
+that the key filenames, the SSM parameter names and the ExternalSecret rewrite are all
+built on — real churn, to settle a name that misleads nobody.
+
+### Identity: address by `id`
+
+**`id` is `<owner>/<device>`** — both halves slugs matching `^[a-z0-9][a-z0-9-]*$`, so
+it is safe in an MQTT topic, a filename, a URL path, or a metric label.
+`findmy/jane/keys/location` drops straight out of it. The halves are on the wire too,
+so building that topic needs no string surgery.
+
+Neither identifier Apple gives us could serve, which is why we assign our own:
+
+- **`upstream_id`** contains `#` — an MQTT *multi-level wildcard* — plus `/`, `§` and
+  `¶`. A real one, with its identifying middle redacted:
+  `a:/00000000-0000-0000-0000-...~#¶§§...`. Publishing to a topic built from that would
+  not merely look ugly, it would corrupt routing.
+- **`display_name`** is freeform: `Jane’s Apple\xa0Watch` carries a typographic
+  apostrophe and a non-breaking space; accessories also have an emoji field, and names
+  like `Kayak 🐬` are normal. It also changes whenever someone renames the tag in Find
+  My.
+
+Both are still published — for correlating against Find My, for registry lookups, and
+for showing a human something they recognise — but neither is an address.
+
+> **Changed in 0.2.0.** `id` previously held Apple's opaque string and had to be
+> documented as *not* addressable, which is a trap: the field named like an identifier
+> was the one you must not use. Apple's string moved to `upstream_id`, the old `name`
+> became `display_name`, and `id` now holds the slug pair. If you are upgrading, `id` →
+> `upstream_id` and `name` → `display_name`, and anything keyed on the old `id` should
+> move to the new one, which is stabler.
 
 Slugs resolve in this order:
 
@@ -123,10 +178,32 @@ the indicator red, and the values are the top of each band, so they read optimis
 Plot them as a shape; **alert on `battery_level`**, which is what the hardware actually
 reported.
 
-`status_raw` is passed through unmodified for accessories if you want to derive something
-else from it. The level mapping follows FindMy.py's own scanner: bits 6–7 of the status
-byte, `0b00`=full, `0b01`=medium, `0b10`=low, `0b11`=critical (FindMy.py calls the last
-"Very Low"; normalised here so the vocabulary matches across backends).
+### What else is in the status byte
+
+`status_raw` is passed through unmodified so you can derive more from it than we do.
+Apple documents none of this; the layout below comes from FindMy.py's BLE scanner,
+which decodes the same byte as advertised by the accessory:
+
+| Bits | Meaning | Values |
+|---|---|---|
+| 7–6 | battery level | `0b00` full, `0b01` medium, `0b10` low, `0b11` critical (FindMy.py calls the last "Very Low"; normalised here so the vocabulary matches across backends) |
+| 5–4 | device type | `0b00` Apple device, `0b01` AirTag, `0b10` licensed third-party Find My device, `0b11` AirPods |
+| 3–0 | unknown | observed as `0b0000` on every report seen so far |
+
+Only bits 7–6 are surfaced, as `battery_level`. The device-type bits are decoded by
+FindMy.py in the *scanning* path rather than the *reports* path, but the same encoding
+does appear to hold for report bytes — `0xD0` (`0b11010000`) from an AirTag decodes as
+critical battery on an AirTag, and `0x00` from an Apple Watch as full battery on an
+Apple device, both of which are correct. Treat that as a well-supported inference
+rather than a documented guarantee: it rests on an undocumented format, and a
+third-party tracker is the case most likely to deviate.
+
+If you want the device type, take it from `status_raw` yourself:
+
+```python
+DEVICE_TYPE = {0b00: "apple-device", 0b01: "airtag", 0b10: "third-party", 0b11: "airpods"}
+kind = DEVICE_TYPE[(status_raw >> 4) & 0b11]
+```
 
 ## `GET /devices`
 
