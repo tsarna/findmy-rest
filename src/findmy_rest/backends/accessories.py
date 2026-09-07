@@ -80,6 +80,32 @@ class AccessoryBackend:
         logger.info("loaded %d accessory key file(s) from %s", len(loaded), keys_dir)
         return len(loaded)
 
+    def _merge(self, selected: list, results) -> list[Device]:
+        """Fresh results for what was polled, last known position for what was not.
+
+        The cache is keyed by `upstream_id` rather than `id`: the lookup below has
+        an accessory in hand and only Apple's identifier to match on, never the
+        owner/device slug. Getting that wrong fails silently -- every deferred
+        accessory would simply lose its position.
+        """
+        previous = {device.upstream_id: device for device in self._cache}
+
+        devices = []
+        for accessory in self._accessories:
+            if accessory not in selected:
+                # Not polled this cycle: keep what we last knew, so a deferred
+                # accessory still appears, with location_age_s telling the truth
+                # about how old its fix is.
+                stale = previous.get(accessory.identifier)
+                devices.append(stale if stale else self._to_device(accessory, None))
+                continue
+
+            report = results.get(accessory) if isinstance(results, dict) else results
+            if isinstance(report, list):
+                report = max(report, key=lambda r: r.timestamp) if report else None
+            devices.append(self._to_device(accessory, report))
+        return devices
+
     def _to_device(self, accessory: FindMyAccessory, report) -> Device:
         name = accessory.name or accessory.identifier
         owner, device_slug = self._settings.identify(
@@ -228,23 +254,7 @@ class AccessoryBackend:
             self.health.refreshing = False
             return self._cache
 
-        # Keyed by upstream_id, because the lookup below has an accessory in hand
-        # and only its Apple identifier to match on -- not the owner/device slug.
-        previous = {device.upstream_id: device for device in self._cache}
-        devices = []
-        for accessory in self._accessories:
-            if accessory not in selected:
-                # Not polled this cycle: keep what we last knew, so a deferred
-                # accessory still appears, with location_age_s telling the truth
-                # about how old its fix is.
-                stale = previous.get(accessory.identifier)
-                devices.append(stale if stale else self._to_device(accessory, None))
-                continue
-
-            report = results.get(accessory) if isinstance(results, dict) else results
-            if isinstance(report, list):
-                report = max(report, key=lambda r: r.timestamp) if report else None
-            devices.append(self._to_device(accessory, report))
+        devices = self._merge(selected, results)
 
         # FindMy.py advances alignment in memory as it decrypts; persist it so
         # the next start does not repeat the walk.

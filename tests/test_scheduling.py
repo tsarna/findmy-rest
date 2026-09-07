@@ -91,6 +91,44 @@ def test_zero_budget_disables_deferral(tmp_path):
     assert deferred == []
 
 
+def test_a_deferred_accessory_keeps_its_last_known_position(tmp_path):
+    """The whole point of deferring rather than dropping.
+
+    A regression guard with teeth: the cache is built from Device objects but
+    looked up with a FindMy accessory in hand, so the two sides must agree on
+    which field is the key. They are different fields -- `upstream_id` holds
+    Apple's identifier, `id` holds the owner/device slug -- and picking the wrong
+    one fails silently, quietly discarding the position of every accessory that
+    is not polled this cycle.
+    """
+    from findmy_rest.models import Device, Kind, Source
+
+    watch = FakeAccessory("watch", 60_000)
+    backend = _backend(tmp_path, watch, budget=5000)
+    backend._cache = [
+        Device(
+            upstream_id=watch.identifier,
+            display_name="Watch",
+            kind=Kind.ACCESSORY,
+            source=Source.FINDMY,
+            owner="jane",
+            device="watch",
+            lat=37.235,
+            lon=-115.8111,
+        )
+    ]
+
+    selected, deferred = backend._select()
+    assert selected == [] and deferred, "precondition: the accessory must be deferred"
+
+    merged = backend._merge(selected, {})
+    assert len(merged) == 1
+    assert (merged[0].lat, merged[0].lon) == (37.235, -115.8111), (
+        "deferred accessory lost its last known position"
+    )
+    assert merged[0].id == "jane/watch"
+
+
 def test_an_accessory_that_becomes_cheap_is_polled_every_cycle_again(tmp_path):
     """Reporting resets alignment, so cost collapses -- and polling must recover
     immediately rather than staying on the slow schedule."""
