@@ -1,0 +1,76 @@
+name: Checks
+
+# The one definition of "is this tree good", called by CI on every push and by
+# the image workflow before it publishes anything. Kept reusable so a tag cannot
+# be held to a weaker standard than a pull request: pushing a tag does not run
+# CI, so without this nothing would re-run the tests on the commit an image is
+# built from.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor and the ceiling of what pyproject allows. FindMy.py requires
+        # >=3.10,<3.15; the container ships 3.12.
+        python-version: ["3.10", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # The fmip extra is installed here but not in the default image: its
+      # backend is optional at runtime, and an import error in it should fail a
+      # check rather than a deploy.
+      - name: Install
+        run: pip install -e ".[dev,fmip]"
+
+      # Checked rather than applied: a failure is a one-command fix locally
+      # (ruff format .), and CI rewriting source is worse than saying so.
+      - name: Check formatting
+        run: ruff format --check .
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest -q
+
+      # The service must come up with no state, no keys and no credentials --
+      # that is the cold-start every fresh deployment does, and it must report
+      # auth_required rather than crash.
+      - name: Cold-start smoke test
+        run: |
+          set -euo pipefail
+          FINDMY_REST_STATE_DIR=$(mktemp -d) \
+          FINDMY_REST_KEYS_DIR=$(mktemp -d) \
+          FINDMY_REST_PORT=8099 \
+            python -m findmy_rest &
+          server=$!
+          trap 'kill $server 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 30); do
+            if curl -fsS localhost:8099/health >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+
+          curl -fsS localhost:8099/health | tee /dev/stderr | python -c "
+          import json, sys
+          health = json.load(sys.stdin)
+          assert health['ok'] is True, health
+          "
+          curl -fsS localhost:8099/openapi.json >/dev/null
+          test "$(curl -fsS localhost:8099/devices)" = "[]"

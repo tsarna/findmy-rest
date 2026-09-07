@@ -1,0 +1,16 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "release/**"]
+  pull_request:
+    branches: [main, "release/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  # The steps themselves live in checks.yml, so a tag build runs exactly what a
+  # pull request runs. Change them there.
+  checks:
+    uses: ./.github/workflows/checks.yml

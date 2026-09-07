@@ -1,0 +1,206 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    tags:
+      - "v*"
+
+env:
+  IMAGE_NAME: ${{ github.repository_owner }}/findmy-rest
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ── Gate ─────────────────────────────────────────────────────────────────────
+  # Every push here publishes something -- a tag publishes :X.Y.Z, :X.Y and :X,
+  # main publishes :latest -- and this workflow is triggered independently of
+  # CI, so nothing else stands between a bad tree and a public image. It runs on
+  # branch builds too, duplicating CI's few minutes, because "CI will catch it"
+  # is not true of a workflow that does not wait for CI.
+  preflight:
+    uses: ./.github/workflows/checks.yml
+
+  # ── Shared metadata ──────────────────────────────────────────────────────────
+  prep:
+    needs: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      build_time: ${{ steps.build_time.outputs.time }}
+      smoke_tag: ${{ steps.smoke_tag.outputs.tag }}
+    steps:
+      - name: Compute build timestamp
+        id: build_time
+        run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Compute smoke-test image tag
+        id: smoke_tag
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            ref="${{ github.ref_name }}"
+            echo "tag=${ref#v}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref }}" = "refs/heads/develop" ]; then
+            echo "tag=dev" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Docker metadata (version)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+
+  # ── Per-arch build (native runners, push by digest, no tags yet) ─────────────
+  # arm64 is built on an arm64 runner rather than under QEMU: this image carries
+  # Unicorn Engine and a CPython stack, and emulated builds of that are slow
+  # enough to matter.
+  docker-build:
+    needs: prep
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: amd64
+            runner: ubuntu-24.04
+          - platform: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ needs.prep.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ needs.prep.outputs.build_time }}
+          outputs: type=image,name=ghcr.io/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.platform }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Assemble the tagged multi-arch manifest from the per-arch digests ────────
+  merge:
+    needs: [prep, docker-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: digests-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # main    → :latest
+      # develop → :dev
+      # v1.2.3  → :1.2.3, :1.2, :1
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Inspect
+        run: |
+          docker buildx imagetools inspect \
+            ghcr.io/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+
+  # Prove the published image actually runs. The unit tests say the code is
+  # sound; this says the *image* is -- that the venv copied across stages works,
+  # that the non-root user can write its state directory, and that anisette's
+  # Unicorn wheel loads on this architecture, which is the part most likely to
+  # break silently on arm64.
+  image-smoke:
+    needs: [prep, merge]
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ${{ needs.prep.outputs.smoke_tag }}
+    steps:
+      - name: Run the published image and check it serves
+        run: |
+          set -euxo pipefail
+          docker run -d --name findmy-rest -p 8080:8080 \
+            "ghcr.io/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+
+          for _ in $(seq 1 30); do
+            if curl -fsS localhost:8080/health >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+
+          curl -fsS localhost:8080/health | tee /dev/stderr | jq -e '.ok == true'
+          test "$(curl -fsS localhost:8080/devices)" = "[]"
+
+      - name: Check anisette can provision inside the image
+        run: |
+          set -euxo pipefail
+          docker exec findmy-rest python -c "
+          from findmy.reports import LocalAnisetteProvider
+          p = LocalAnisetteProvider()
+          print('anisette provider constructed:', type(p).__name__)
+          "
+
+      - name: Container logs
+        if: always()
+        run: docker logs findmy-rest || true
