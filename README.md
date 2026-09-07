@@ -70,8 +70,11 @@ invalidates them.
 
 ## Running it
 
+See **[docs/HOWTO.md](docs/HOWTO.md)** for a walkthrough from exported keys to a
+running service, with Docker Compose and Kubernetes examples. The short version:
+
 ```bash
-pip install findmy-rest            # add [fmip] for the iCloud device backend
+pip install git+https://github.com/tsarna/findmy-rest   # add [fmip] for iCloud devices
 FINDMY_REST_APPLE_ID=you@example.com \
 FINDMY_REST_PASSWORD=... \
 FINDMY_REST_KEYS_DIR=/path/to/exported/keys \
