@@ -5,6 +5,26 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-08
+
+### Changed
+
+- **The published image now includes the optional FMIP extra.** The workflow passes
+  `EXTRAS=[fmip]`, so pyicloud ships in the image instead of only being installed in
+  CI. Previously the backend could be enabled by configuration but would fail on its
+  first poll, because the package it imports was not there.
+
+  This does **not** turn the backend on. It remains off unless
+  `FINDMY_REST_ENABLE_FMIP` says otherwise, and enabling it still requires a separately
+  authenticated iCloud session. One image rather than a second tag stream: the extra is
+  a few MB, and a variant would double the release surface for very little.
+
+### Added
+
+- The image smoke test asserts pyicloud is importable inside the published image.
+  The backend imports it lazily, so a missing extra is invisible at startup and would
+  otherwise surface only as an exception on the first poll after someone enabled it.
+
 ## [0.2.0] - 2026-09-07
 
 ### Changed — breaking

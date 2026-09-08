@@ -93,10 +93,19 @@ jobs:
         with:
           context: .
           platforms: linux/${{ matrix.platform }}
+          # EXTRAS ships the optional iCloud (FMIP) backend. One image rather
+          # than a second tag stream: the extra is pyicloud plus its rich/click
+          # chain, a few MB, and the backend stays inert unless
+          # FINDMY_REST_ENABLE_FMIP says otherwise -- so a variant would double
+          # the release surface and the Renovate config to save very little.
+          #
+          # Note this block is a literal scalar: a `#` line inside it would be
+          # passed to docker as a build-arg, not read as a comment.
           build-args: |
             VERSION=${{ needs.prep.outputs.version }}
             COMMIT=${{ github.sha }}
             BUILD_TIME=${{ needs.prep.outputs.build_time }}
+            EXTRAS=[fmip]
           outputs: type=image,name=ghcr.io/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
@@ -199,6 +208,20 @@ jobs:
           from findmy.reports import LocalAnisetteProvider
           p = LocalAnisetteProvider()
           print('anisette provider constructed:', type(p).__name__)
+          "
+
+      # The FMIP backend imports pyicloud lazily, so a missing EXTRAS would not
+      # show up here as a failure -- the service starts fine and the backend is
+      # off by default. It would surface much later, as an exception on the
+      # first poll after someone enables it. Assert the extra is actually in the
+      # image instead.
+      - name: Check the FMIP extra shipped
+        run: |
+          set -euxo pipefail
+          docker exec findmy-rest python -c "
+          import pyicloud
+          from findmy_rest.backends.idevices import FmipBackend
+          print('pyicloud importable; FmipBackend loaded:', FmipBackend.source)
           "
 
       - name: Container logs

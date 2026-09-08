@@ -17,9 +17,14 @@ RUN apt-get update \
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
-# Empty by default. Set to "[fmip]" to include the optional iCloud device
-# backend (pyicloud and its rich/typer/click chain); the accessory path -- the
-# reason this service exists -- needs none of it.
+# Set to "[fmip]" to include the optional iCloud device backend (pyicloud and
+# its rich/typer/click chain); the accessory path -- the reason this service
+# exists -- needs none of it.
+#
+# Empty here so a local `docker build` stays lean, but the published image sets
+# it (see .github/workflows/docker.yml): the backend is inert unless
+# FINDMY_REST_ENABLE_FMIP turns it on, so shipping it costs a few MB and saves
+# maintaining a second image variant.
 ARG EXTRAS=""
 
 WORKDIR /src
