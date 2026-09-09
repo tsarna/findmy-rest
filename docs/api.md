@@ -27,7 +27,7 @@ here.
 | `device` | slug | ⚠ | both | which of theirs, e.g. `keys`. Shares a name with TPV's `device`, which is the *originating GPS receiver* (`/dev/ttyUSB0`) — see below |
 | `upstream_id` | string | · | both | Apple's own opaque identifier, for correlation and registry lookups. **Not addressable.** Not called `apple_id`, which in this project means the iCloud *account* (`FINDMY_REST_APPLE_ID`) |
 | `display_name` | string | · | both | Apple's display name; freeform, may contain emoji. For humans, not for addressing |
-| `kind` | `accessory` \| `idevice` | · | both | what sort of thing it is |
+| `kind` | `accessory` \| `idevice` | · | both | what sort of thing it is, not which backend saw it. Derived from `device_type`; provisionally `accessory` until a report has been decrypted |
 | `source` | `findmy` \| `fmip` | · | both | which backend produced this record |
 | `lat` | float | ✓ | both | **optional** — see below |
 | `lon` | float | ✓ | both | **optional** |
@@ -39,6 +39,7 @@ here.
 | `battery_pct` | int 0–100 | · | both | iCloud devices: measured. Accessories: **derived** from the level, see below |
 | `battery_estimated` | bool | · | both | true when `battery_pct` was derived rather than measured |
 | `status_raw` | int | · | findmy | raw accessory status byte, unmodified. Carries a device type as well as the battery level — see below |
+| `device_type` | `apple_device` \| `airtag` \| `third_party` \| `airpods` | · | findmy | bits 5–4 of the status byte; absent until a report has been decrypted |
 | `confidence` | int | · | findmy | Apple's confidence in the fix. FindMy.py documents 1–3, but **0 occurs in practice** — do not validate against that range |
 | `device_status` | `online` \| `offline` \| `pending` \| `unregistered` | · | fmip | mapped from FMIP's numeric status |
 | `has_location` | bool | · | both | computed; always present |
@@ -190,20 +191,26 @@ which decodes the same byte as advertised by the accessory:
 | 5–4 | device type | `0b00` Apple device, `0b01` AirTag, `0b10` licensed third-party Find My device, `0b11` AirPods |
 | 3–0 | unknown | observed as `0b0000` on every report seen so far |
 
-Only bits 7–6 are surfaced, as `battery_level`. The device-type bits are decoded by
-FindMy.py in the *scanning* path rather than the *reports* path, but the same encoding
-does appear to hold for report bytes — `0xD0` (`0b11010000`) from an AirTag decodes as
-critical battery on an AirTag, and `0x00` from an Apple Watch as full battery on an
-Apple device, both of which are correct. Treat that as a well-supported inference
-rather than a documented guarantee: it rests on an undocumented format, and a
-third-party tracker is the case most likely to deviate.
+Bits 7–6 are surfaced as `battery_level` and bits 5–4 as `device_type`. The
+device-type bits are decoded by FindMy.py in the *scanning* path rather than the
+*reports* path, but the same encoding does appear to hold for report bytes — `0xD0`
+(`0b11010000`) from an AirTag decodes as critical battery on an AirTag, and `0x00`
+from an Apple Watch as full battery on an Apple device, both of which are correct.
+Treat that as a well-supported inference rather than a documented guarantee: it rests
+on an undocumented format, and a third-party tracker is the case most likely to
+deviate. `status_raw` stays on the wire unmodified so you can second-guess us.
 
-If you want the device type, take it from `status_raw` yourself:
+`device_type` is also what sets `kind`: `apple_device` means `idevice`, everything
+else means `accessory`. That is deliberately a statement about the **thing**, not
+about which backend saw it — an iPhone found through exported accessory keys is
+still an iPhone, and `source` is the field that records the observer. Battery
+alerting depends on the distinction, since "replace this tracker's cell" and "this
+phone wants a charger" are different messages.
 
-```python
-DEVICE_TYPE = {0b00: "apple-device", 0b01: "airtag", 0b10: "third-party", 0b11: "airpods"}
-kind = DEVICE_TYPE[(status_raw >> 4) & 0b11]
-```
+Both fields are absent until a report has actually been decrypted, because the byte
+only exists in a report. `kind` therefore reads `accessory` for a device that has
+never been heard from — provisional rather than measured. Once learned it is
+remembered across quiet polls, so it does not flap.
 
 ## `GET /devices`
 
@@ -228,6 +235,29 @@ still lingering in the account. Account cruft that neither catches should go in
 as `Case`, `left` and `right`, so only the model identifies it).
 
 A malformed `max_age` returns **400**.
+
+### One device, two backends
+
+An iPhone, a Watch or a Mac can be visible through both backends at once: the
+accessory backend decrypts its offline-finding beacons, and the FMIP backend asks
+iCloud where it is. Those are two observations of one thing, so **the response
+contains one object per `id`, carrying the fresher fix** — never two.
+
+Which backend wins flips with the state of the device, and both answers are right:
+
+- **Online** — it reports to Apple directly and emits no beacons, so the accessory
+  backend has only an ageing fix while FMIP has a current one. In practice FMIP's is
+  also far better: ~5 m against ~98 m for the same phone.
+- **Powered off or in airplane mode** — it beacons, and FMIP has nothing newer than
+  the moment it went offline. The accessory backend wins, which is exactly when its
+  position matters most.
+
+A record with no fix never displaces one that has a location, so an iCloud device
+sharing battery but not position cannot hide a beacon fix. `source` on the returned
+object tells you which backend it came from, and it is expected to change over time
+for the same device.
+
+Pass `source=findmy` or `source=fmip` to see a single backend's unmerged view.
 
 ### Polling and caching
 

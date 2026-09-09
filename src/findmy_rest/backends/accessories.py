@@ -19,7 +19,15 @@ from findmy import FindMyAccessory
 
 from ..alignment import AlignmentStore
 from ..config import Settings
-from ..models import BackendHealth, Device, Kind, Source, battery_from_status
+from ..models import (
+    BackendHealth,
+    Device,
+    Kind,
+    Source,
+    battery_from_status,
+    device_type_from_status,
+    kind_from_device_type,
+)
 from ..session import AppleSession, AuthRequiredError
 
 logger = logging.getLogger(__name__)
@@ -103,8 +111,25 @@ class AccessoryBackend:
             report = results.get(accessory) if isinstance(results, dict) else results
             if isinstance(report, list):
                 report = max(report, key=lambda r: r.timestamp) if report else None
-            devices.append(self._to_device(accessory, report))
+            fresh = self._to_device(accessory, report)
+            devices.append(self._remember_device_type(fresh, previous.get(accessory.identifier)))
         return devices
+
+    @staticmethod
+    def _remember_device_type(device: Device, prior: Device | None) -> Device:
+        """Carry a known device type across a poll that decrypted no report.
+
+        The type lives in the status byte, so it is only learned when a report
+        arrives. Accessories report intermittently -- some go hours between fixes
+        -- so without this, `kind` would flap between the real value and the
+        default on every quiet cycle. `kind` is a metric label, and a label that
+        flaps mints a second time series for one device, with the abandoned one
+        frozen at its last value forever.
+        """
+        if device.device_type is None and prior is not None and prior.device_type is not None:
+            device.device_type = prior.device_type
+            device.kind = prior.kind
+        return device
 
     def _to_device(self, accessory: FindMyAccessory, report) -> Device:
         name = accessory.name or accessory.identifier
@@ -135,6 +160,17 @@ class AccessoryBackend:
         device.status_raw = report.status
         device.confidence = report.confidence
         device.battery_level = battery_from_status(report.status)
+
+        # The same byte says what the thing is. An iPhone or a Watch reached
+        # through exported keys is an idevice, not an accessory -- it beacons only
+        # while offline, but that describes how it was seen, not what it is, and
+        # `source` already records the observer. Battery alerting depends on the
+        # distinction: "replace this tracker's cell" and "this phone wants a
+        # charger" are different messages.
+        device.device_type = device_type_from_status(report.status)
+        kind = kind_from_device_type(device.device_type)
+        if kind is not None:
+            device.kind = kind
         return device
 
     async def fetch(self, *, force: bool = False, wait: bool = False) -> list[Device]:

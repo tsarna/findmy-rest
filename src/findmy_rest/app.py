@@ -17,6 +17,7 @@ from . import __version__
 from .backends.accessories import AccessoryBackend
 from .backends.idevices import FmipBackend
 from .config import Settings
+from .merge import merge_devices
 from .models import Device, Health, Source
 from .session import AppleSession, AuthRequiredError
 
@@ -77,7 +78,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             devices += await accessories.fetch(force=force, wait=wait)
         if source in (None, Source.FMIP):
             devices += await fmip.fetch(force=force)
-        return devices
+        # Accessories first, so a tie goes to the backend that works without
+        # iCloud. Merging runs even for a single backend: it is cheap, and it
+        # keeps one code path rather than two.
+        return merge_devices(devices)
 
     @app.get("/devices")
     async def get_devices(

@@ -24,6 +24,19 @@ from . import __version__
 # "Very Low" is normalised to "critical" so the vocabulary matches across backends.
 BATTERY_FROM_STATUS = {0b00: "full", 0b01: "medium", 0b10: "low", 0b11: "critical"}
 
+# Bits 5-4 of the same byte. Confirmed against real reports: the AirTags decode as
+# `airtag` and an Apple Watch as `apple_device`.
+#
+# This is what separates "a tracker whose battery I must replace" from "a phone
+# whose battery is simply low", which is not otherwise knowable from this backend
+# -- an exported key file looks identical either way.
+DEVICE_TYPE_FROM_STATUS = {
+    0b00: "apple_device",
+    0b01: "airtag",
+    0b10: "third_party",
+    0b11: "airpods",
+}
+
 # Accessories report four levels, never a percentage. These stand-ins exist so a
 # dashboard can plot one series for every device instead of two: 10 is where iOS
 # and macOS turn the battery indicator red. There is no measurement behind them
@@ -104,6 +117,10 @@ class Device(BaseModel):
     )
 
     status_raw: int | None = Field(default=None, description="FindMy.py accessory status byte")
+    device_type: str | None = Field(
+        default=None,
+        description="apple_device | airtag | third_party | airpods, from status_raw bits 5-4",
+    )
     confidence: int | None = Field(default=None, description="FindMy.py report confidence, 1-3")
     device_status: str | None = Field(default=None, description="FMIP status, mapped")
 
@@ -174,6 +191,29 @@ def battery_from_status(status: int | None) -> str | None:
     if status is None:
         return None
     return BATTERY_FROM_STATUS.get((status >> 6) & 0b11)
+
+
+def device_type_from_status(status: int | None) -> str | None:
+    """Decode bits 5-4. None when there has been no report to read them from."""
+    if status is None:
+        return None
+    return DEVICE_TYPE_FROM_STATUS.get((status >> 4) & 0b11)
+
+
+def kind_from_device_type(device_type: str | None) -> Kind | None:
+    """What the thing *is*, as distinct from which backend happened to see it.
+
+    An iPhone or a Watch found through exported keys is still an iPhone: it beacons
+    on the Find My network only while offline, but that is a fact about how it was
+    observed, not about what it is. `source` records the observer.
+
+    Returns None when unknown, so a caller can leave an existing value alone rather
+    than overwrite it with a guess -- `kind` is a metric label, and a value that
+    flaps mints a second time series for the same device.
+    """
+    if device_type is None:
+        return None
+    return Kind.IDEVICE if device_type == "apple_device" else Kind.ACCESSORY
 
 
 class BackendHealth(BaseModel):

@@ -357,3 +357,71 @@ def test_a_backend_supplying_both_is_left_alone():
     wire = _battery(battery_level="full", battery_pct=12)
     assert (wire["battery_level"], wire["battery_pct"]) == ("full", 12)
     assert wire.get("battery_estimated", False) is False
+
+
+def test_device_type_uses_bits_five_and_four():
+    """The same byte carries battery in 7-6 and device type in 5-4."""
+    from findmy_rest.models import device_type_from_status
+
+    assert device_type_from_status(0b00000000) == "apple_device"
+    assert device_type_from_status(0b00010000) == "airtag"
+    assert device_type_from_status(0b00100000) == "third_party"
+    assert device_type_from_status(0b00110000) == "airpods"
+    # The battery bits above and the unknown bits below must not disturb it.
+    assert device_type_from_status(0b11011111) == "airtag"
+    assert device_type_from_status(None) is None
+
+
+def test_kind_follows_the_thing_not_the_backend():
+    """An iPhone reached through exported keys is still an idevice.
+
+    It beacons only while offline, but that describes how it was observed, which
+    is what `source` records.
+    """
+    from findmy_rest.models import Kind, kind_from_device_type
+
+    assert kind_from_device_type("apple_device") is Kind.IDEVICE
+    assert kind_from_device_type("airtag") is Kind.ACCESSORY
+    assert kind_from_device_type("third_party") is Kind.ACCESSORY
+    assert kind_from_device_type("airpods") is Kind.ACCESSORY
+    # Unknown must not resolve to a guess: the caller leaves `kind` alone, and a
+    # `kind` that flaps mints a second metric series for one device.
+    assert kind_from_device_type(None) is None
+
+
+def test_device_type_survives_a_poll_with_no_report():
+    """Accessories report intermittently; `kind` must not flap in the gaps.
+
+    Reintroduce the bug by dropping the carry-forward in
+    AccessoryBackend._remember_device_type and this fails: the device reverts to
+    the provisional `accessory`, and every quiet cycle mints a second series.
+    """
+    from findmy_rest.backends.accessories import AccessoryBackend
+    from findmy_rest.models import Device, Kind, Source
+
+    def _phone(kind=Kind.ACCESSORY, **kw):
+        # kind defaults to the provisional value the backend assigns before any
+        # report has been decrypted.
+        return Device(
+            upstream_id="u",
+            display_name="TPhone",
+            kind=kind,
+            source=Source.FINDMY,
+            owner="tsarna",
+            device="phone",
+            **kw,
+        )
+
+    known = _phone(device_type="apple_device", kind=Kind.IDEVICE)
+    fresh = _phone()  # this cycle decrypted nothing, so no status byte
+
+    carried = AccessoryBackend._remember_device_type(fresh, known)
+    assert carried.device_type == "apple_device"
+    assert carried.kind is Kind.IDEVICE
+
+    # A report this cycle wins over what we remembered.
+    reported = _phone(device_type="airtag", kind=Kind.ACCESSORY)
+    assert AccessoryBackend._remember_device_type(reported, known).kind is Kind.ACCESSORY
+
+    # Nothing known anywhere: leave the provisional value rather than inventing one.
+    assert AccessoryBackend._remember_device_type(_phone(), None).device_type is None

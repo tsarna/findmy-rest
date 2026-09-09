@@ -5,6 +5,45 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-09
+
+### Changed — behaviour
+
+- **`/devices` returns one object per `id`.** A phone, watch or Mac can be visible
+  through both backends at once — the accessory backend decrypts its offline-finding
+  beacons while FMIP asks iCloud — and those two records previously both appeared,
+  sharing an `id`. The response now carries whichever holds the **fresher fix**.
+
+  This is not merely deduplication. Which backend is right flips with the state of
+  the device: while it is online it emits no beacons, so FMIP wins and brings a far
+  better fix (~5 m against ~98 m for the same phone); while it is off or in airplane
+  mode it beacons and FMIP is frozen at the moment connectivity stopped, so the
+  accessory backend wins — exactly when its position matters most. A record with no
+  fix never displaces one that has a location.
+
+  `source` on the returned object says which backend produced it, and is expected to
+  change over time for the same device. `?source=findmy` / `?source=fmip` still give
+  a single backend's unmerged view.
+
+- **`kind` now describes the thing, not the backend that saw it.** An iPhone or Watch
+  reached through exported accessory keys previously reported `kind: accessory`,
+  because the accessory backend hardcoded it. It is now derived from the device-type
+  bits of the status byte, so such devices report `idevice`.
+
+  Consumers filtering on `kind` will see the change — notably battery alerting, where
+  the point of the field is to separate "replace this tracker's cell" from "this phone
+  wants a charger". If `kind` is a metric label, expect existing series for those
+  devices to stop and new ones to start.
+
+  The value is provisional until a report has actually been decrypted, since the byte
+  only exists in a report; a device never heard from still reads `accessory`. Once
+  learned it is remembered across polls that decrypt nothing, so it does not flap.
+
+### Added
+
+- `device_type`: `apple_device` | `airtag` | `third_party` | `airpods`, decoded from
+  bits 5–4 of the accessory status byte. `status_raw` remains on the wire unmodified.
+
 ## [0.3.0] - 2026-09-08
 
 ### Changed
