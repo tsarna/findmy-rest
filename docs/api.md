@@ -266,6 +266,13 @@ cache is older than `FINDMY_REST_MIN_FETCH_INTERVAL` (default 60s). The first ca
 a cold start can therefore return `[]` or stale data while the first refresh runs; add
 `?wait=true` if you want freshness over promptness.
 
+The two backends have **separate floors**, because they cost Apple different things. The
+accessory path reads reports Apple already holds; an FMIP fetch asks Apple to *locate*
+real devices, which reaches out to them. So FMIP has its own
+`FINDMY_REST_FMIP_MIN_FETCH_INTERVAL`, defaulting to 900s. Sharing one interval would
+poll both at whatever suited the cheap one — and a phone's position does not move enough
+to justify the attention.
+
 The refresh is off the request path because it can be slow in a way that is not fixable.
 Finding a report means deriving every rolling key the accessory could currently be using,
 and that band widens by ~96 indices per day for anything that has not reported — the key

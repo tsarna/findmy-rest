@@ -44,6 +44,14 @@ class Settings:
     # so fetching more often than this buys nothing and only draws attention.
     min_fetch_interval_s: int = 60
 
+    # FMIP gets its own, much longer floor. The accessory path reads reports Apple
+    # already holds, but an FMIP fetch asks Apple to *locate* real devices, which
+    # reaches out to them. Sharing one interval would have the two backends polled
+    # at whatever suits the cheap one -- every 5 minutes in practice, which is far
+    # more attention than a phone's battery deserves for a position that barely
+    # moves.
+    fmip_min_fetch_interval_s: int = 900
+
     # Devices whose name matches any of these are dropped entirely: account cruft that
     # cannot be deleted upstream. Substring match, case-insensitive.
     exclude: tuple[str, ...] = ()
@@ -102,6 +110,7 @@ class Settings:
             host=os.environ.get("FINDMY_REST_HOST", "0.0.0.0"),
             port=_int("FINDMY_REST_PORT", 8080),
             min_fetch_interval_s=_int("FINDMY_REST_MIN_FETCH_INTERVAL", 60),
+            fmip_min_fetch_interval_s=_int("FINDMY_REST_FMIP_MIN_FETCH_INTERVAL", 900),
             exclude=tuple(x.strip() for x in exclude_raw.split(",") if x.strip()),
             enable_fmip=_bool("FINDMY_REST_ENABLE_FMIP", default=False),
             poll_budget_indices=_int("FINDMY_REST_POLL_BUDGET", 5000),

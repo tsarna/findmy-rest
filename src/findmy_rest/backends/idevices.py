@@ -1,8 +1,21 @@
 """iDevice backend: phones, laptops and watches via the iCloud FMIP endpoint.
 
-Optional, and off by default. Two reasons it is secondary: each fetch pings real
-devices, and family members' devices return battery but no location unless they
-share location with this account. The accessory backend is the product.
+Optional and off by default, but not redundant: it is the *only* way to see an
+online Apple device. A phone with any route to Apple reports directly and emits no
+offline-finding beacons, so the accessory backend cannot see it at all -- measured
+at 23 hours of silence from a phone sitting powered on, which resumed reporting
+within ~17 minutes of going into airplane mode. When both backends can see a
+device, merge.py keeps the fresher fix; in practice that is FMIP while it is online
+(~5 m against ~98 m for the same phone) and the accessory path while it is off.
+
+Two costs keep it secondary. Each fetch asks Apple to locate real devices rather
+than reading reports it already holds, hence the separate, longer
+`fmip_min_fetch_interval_s`. And family members' devices return battery but no
+location unless that member shares location with this account -- which requires
+both the per-person share *and* the account-level "Share My Location" switch. With
+the master switch off the share is accepted and listed but inert, and the API
+reports exactly what it reports when nothing is shared at all: `fmlyShare: false`
+and no location. Nothing distinguishes the two, so check the switch first.
 
 pyicloud is imported lazily so the package is not required unless enabled.
 """
@@ -76,6 +89,26 @@ class FmipBackend:
     def _fetch_blocking(self) -> list[Device]:
         if self._api is None:
             self._api = self._connect()
+
+        # Refresh the service token ourselves, before touching `.devices`.
+        #
+        # pyicloud's own recovery is the hazard. When the findme service token
+        # expires, `_refresh_client` raises and
+        # FindMyiPhoneServiceManager._refresh_client_with_reauth answers with
+        # `authenticate(force_refresh=True)` -- throwing away a perfectly good
+        # trusted session for a full SRP re-login. Apple refuses that often
+        # enough to matter, and every API error during SRP is relabelled
+        # "Invalid email/password combination" (base.py:701) regardless of the
+        # real cause, so the failure reads as a credentials problem it is not.
+        # Observed: the first fetch after a session had sat overnight died that
+        # way, with the password provably correct.
+        #
+        # A plain authenticate() reuses the trusted session and re-runs
+        # accountLogin, which is all an expired *service* token needs. Both
+        # `.devices` and `refresh()` route through that recovery, so this has to
+        # happen before either.
+        self._api.authenticate()
+
         manager = self._api.devices
         manager.refresh()  # family devices arrive on a follow-up poll
         return [
@@ -91,7 +124,7 @@ class FmipBackend:
             return []
 
         age = time.monotonic() - self._fetched_at
-        if not force and self._cache and age < self._settings.min_fetch_interval_s:
+        if not force and self._cache and age < self._settings.fmip_min_fetch_interval_s:
             return self._cache
 
         try:

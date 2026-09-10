@@ -5,6 +5,32 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-09
+
+### Added
+
+- **`FINDMY_REST_FMIP_MIN_FETCH_INTERVAL`** (default `900`): the iCloud backend now has
+  its own fetch floor instead of sharing `FINDMY_REST_MIN_FETCH_INTERVAL` with the
+  accessory backend. The two cost Apple different things — the accessory path reads
+  reports Apple already holds, while an FMIP fetch asks Apple to *locate* real devices,
+  which reaches out to them. Sharing one interval meant polling both at whatever suited
+  the cheap one.
+
+### Fixed
+
+- **The iCloud backend no longer lets pyicloud discard a working session.** When the
+  `findme` service token expires, pyicloud's own recovery calls
+  `authenticate(force_refresh=True)`, throwing away a valid trusted session for a full
+  SRP re-login — which Apple refuses often enough to matter. Worse, every API error
+  during SRP is relabelled `Invalid email/password combination` regardless of cause, so
+  the failure reads as a credentials problem it is not. Observed in practice: a fetch
+  died that way with the password provably correct.
+
+  The backend now calls plain `authenticate()` before touching the device manager, which
+  reuses the trusted session and re-runs `accountLogin` — all an expired *service* token
+  actually needs. Both the `.devices` property and `refresh()` route through the bad
+  recovery, so this has to happen before either.
+
 ## [0.4.0] - 2026-09-09
 
 ### Changed — behaviour

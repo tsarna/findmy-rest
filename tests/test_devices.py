@@ -425,3 +425,21 @@ def test_device_type_survives_a_poll_with_no_report():
 
     # Nothing known anywhere: leave the provisional value rather than inventing one.
     assert AccessoryBackend._remember_device_type(_phone(), None).device_type is None
+
+
+def test_fmip_has_its_own_fetch_floor(monkeypatch):
+    """The two backends must not share an interval.
+
+    The accessory path reads reports Apple already holds; an FMIP fetch asks Apple
+    to *locate* real devices, reaching out to them. Sharing `min_fetch_interval_s`
+    would poll both at whatever suits the cheap one -- 5 minutes in this
+    deployment, which is far more attention than a phone's position needs.
+    """
+    from findmy_rest.config import Settings
+
+    settings = Settings()
+    assert settings.fmip_min_fetch_interval_s == 900
+    assert settings.fmip_min_fetch_interval_s > settings.min_fetch_interval_s
+
+    monkeypatch.setenv("FINDMY_REST_FMIP_MIN_FETCH_INTERVAL", "1800")
+    assert Settings.from_env().fmip_min_fetch_interval_s == 1800

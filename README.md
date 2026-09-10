@@ -92,7 +92,8 @@ FINDMY_REST_STATE_DIR=/var/lib/findmy-rest \
 | `FINDMY_REST_PASSWORD` | — | only needed for the initial login |
 | `FINDMY_REST_KEYS_DIR` | `accessories` | exported accessory JSON files |
 | `FINDMY_REST_STATE_DIR` | `.state` | session, anisette identity and libs — **must persist** |
-| `FINDMY_REST_MIN_FETCH_INTERVAL` | `60` | seconds; floor on how often Apple is contacted |
+| `FINDMY_REST_MIN_FETCH_INTERVAL` | `60` | seconds; floor on how often Apple is contacted for accessory reports |
+| `FINDMY_REST_FMIP_MIN_FETCH_INTERVAL` | `900` | seconds; separate floor for the iCloud backend, which asks Apple to *locate* devices rather than reading reports it already holds |
 | `FINDMY_REST_EXCLUDE` | — | comma-separated substrings (name and model); matching devices are dropped |
 | `FINDMY_REST_REGISTRY` | `/etc/findmy-rest/registry.json` | maps Apple name or id to `<owner>/<device>` |
 | `FINDMY_REST_DEFAULT_OWNER` | `unknown` | owner for devices the registry and filenames do not name |
