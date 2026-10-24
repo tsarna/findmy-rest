@@ -5,6 +5,23 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-10-24
+
+### Fixed
+
+- **Apple sign-in no longer fails with `Error response for GSA request: 503`.** Since
+  around 2026-09-11 Apple's GSA endpoint refuses any request whose
+  `X-MMe-Client-Info` names `com.apple.dt.Xcode`, which FindMy.py 0.10.1 sent, and
+  it does so before checking credentials -- so every fresh login failed regardless of
+  the password. An existing session kept working, which hid it until something forced
+  a re-login. FindMy.py 0.10.2 identifies as `akd` instead
+  ([FindMy.py#271](https://github.com/malmeloo/FindMy.py/pull/271)); the dependency
+  floor is now `findmy>=0.10.2`.
+
+  The constraint already allowed 0.10.2, but nothing pins resolved versions, so the
+  0.5.0 image kept the 0.10.1 it was built with. Raising the floor makes a rebuild
+  unable to produce the broken combination.
+
 ## [0.5.0] - 2026-09-09
 
 ### Added

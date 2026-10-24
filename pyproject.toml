@@ -1,6 +1,6 @@
 [project]
 name = "findmy-rest"
-version = "0.5.0"
+version = "0.5.1"
 description = "REST API for Apple Find My accessory and device location and battery"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -9,7 +9,7 @@ authors = [{ name = "Ty Sarna" }]
 keywords = ["findmy", "airtag", "apple", "location", "rest"]
 
 dependencies = [
-    "findmy>=0.10.1,<0.11",
+    "findmy>=0.10.2,<0.11",
     "fastapi>=0.115",
     "uvicorn>=0.34",
     "pydantic>=2.10",
