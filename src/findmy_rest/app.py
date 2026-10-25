@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
@@ -17,8 +18,9 @@ from . import __version__
 from .backends.accessories import AccessoryBackend
 from .backends.idevices import FmipBackend
 from .config import Settings
+from .failures import Backoff
 from .merge import merge_devices
-from .models import Device, Health, Source
+from .models import BackendHealth, Device, Health, Source
 from .session import AppleSession, AuthRequiredError
 
 logger = logging.getLogger(__name__)
@@ -49,8 +51,26 @@ def parse_duration(value: str | None) -> float | None:
     return int(amount) * MULTIPLIER.get(unit or "s", 1)
 
 
+def _report(
+    health: BackendHealth, backoff: Backoff, started: datetime, now: datetime
+) -> BackendHealth:
+    """A backend's health as of `now`, with the time-dependent fields filled in."""
+    report = health.model_copy()
+    if not health.enabled:
+        report.last_success_age_s = None
+        report.retry_in_s = None
+        return report
+    since = health.last_fetch or started
+    report.last_success_age_s = round(max(0.0, (now - since).total_seconds()), 1)
+    retry = backoff.retry_in_s()
+    report.retry_in_s = None if retry is None else round(retry, 1)
+    return report
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
+    # The baseline for last_success_age_s while a backend has never succeeded.
+    started = datetime.now(tz=timezone.utc)
     session = AppleSession(settings)
     accessories = AccessoryBackend(settings, session)
     fmip = FmipBackend(settings)
@@ -109,20 +129,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/health")
     async def health() -> Health:
         # Healthy means "serving": a backend needing auth is reported, not fatal,
-        # so Kubernetes does not restart us into a 2FA loop.
+        # so Kubernetes does not restart us into a 2FA loop. Both probes use this
+        # endpoint, so failing it for a backend problem would restart the pod and
+        # drop it from the Service -- losing the *other* backend's data too.
+        # Backend trouble is for the consumer to alert on (last_success_age_s).
+        now = datetime.now(tz=timezone.utc)
+        findmy_health = _report(accessories.health, accessories.backoff, started, now)
+        # The session knows before any fetch does: a cold start with no saved
+        # session, or a restore that came back logged out.
+        findmy_health.auth_required = findmy_health.auth_required or session.auth_required
         return Health(
             ok=True,
-            findmy=accessories.health,
-            fmip=fmip.health,
+            findmy=findmy_health,
+            fmip=_report(fmip.health, fmip.backoff, started, now),
             two_factor_pending=session.two_factor_pending,
         )
 
     @app.post("/login")
     async def login(body: LoginRequest | None = None):
         try:
-            return await session.login(body.password if body else None)
+            result = await session.login(body.password if body else None)
         except AuthRequiredError as exc:
             raise HTTPException(400, str(exc)) from exc
+        if not session.auth_required:
+            # Logged in without needing 2FA.
+            accessories.reauthenticated()
+        return result
 
     @app.post("/login/2fa/request")
     async def request_2fa(method_index: int | None = None):
@@ -140,6 +172,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, str(exc)) from exc
         if not session.auth_required:
             accessories.load_keys()
+            accessories.reauthenticated()
         return {"state": state, "auth_required": session.auth_required}
 
     return app

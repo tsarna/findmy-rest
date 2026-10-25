@@ -111,6 +111,23 @@ class AppleSession:
             if not settings.apple_id or not secret:
                 raise AuthRequiredError("apple_id and password must be configured")
 
+            # FindMy.py only lets a LOGGED_OUT account log in. A session that died
+            # while marked LOGGED_IN -- a password change revokes its tokens without
+            # touching the saved state -- would otherwise be unrecoverable from
+            # here: login() raises InvalidStateError on it (seen 2026-10-24, fixed
+            # then by hand on the PVC). Asking to log in is the operator saying the
+            # old session is dead, so replace the account. Never the anisette
+            # identity: _build_anisette() reloads the saved one from disk.
+            if self._account is not None and self._account.login_state != LoginState.LOGGED_OUT:
+                logger.warning("discarding %s session to log in afresh", self._account.login_state)
+                try:
+                    await self._account.close()
+                except Exception:
+                    logger.debug("closing the discarded session failed", exc_info=True)
+                self._account = None
+                self._methods = None
+                self._2fa_requested_at = None
+
             if self._account is None:
                 self._anisette = self._build_anisette()
                 self._account = AsyncAppleAccount(self._anisette)

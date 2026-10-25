@@ -304,21 +304,39 @@ distinguish "nothing moved" from "we haven't been able to ask".
 {
   "ok": true,
   "findmy": {"enabled": true, "auth_required": false,
-             "last_fetch": "2026-09-06T21:14:33Z", "last_error": null, "device_count": 8},
+             "last_fetch": "2026-09-06T21:14:33Z", "last_error": null, "device_count": 8,
+             "last_success_age_s": 212.4, "retry_in_s": null},
   "fmip":   {"enabled": false, "auth_required": false,
-             "last_fetch": null, "last_error": null, "device_count": 0}
+             "last_fetch": null, "last_error": null, "device_count": 0,
+             "last_success_age_s": null, "retry_in_s": null}
 }
 ```
 
 `ok` is **true whenever the service is serving**, including when a backend needs
-re-authentication. This is deliberate: wiring a liveness probe to `auth_required` would
-restart the pod into a 2FA loop, burning attempts and fixing nothing. A human (or an
-automation) has to supply credentials, and the service stays up serving last-known data
-until then.
+re-authentication or is failing outright. This is deliberate: wiring a probe to backend
+state would restart the pod into a 2FA loop, burning attempts and fixing nothing — and
+since readiness uses this endpoint too, it would also pull the pod from the Service and
+cut off the *healthy* backend's data. A human (or an automation) has to supply
+credentials, and the service stays up serving last-known data until then.
 
-The field to alert on is `auth_required`. The field to graph is `last_fetch` — or better,
-`location_age_s` per device, since that captures "her keys haven't been seen in three
-hours", which is the signal that actually matters.
+The fields to alert on:
+
+- **`last_success_age_s`** — seconds since the backend last fetched successfully, counted
+  from process start if it never has. Alert when it exceeds an hour or so. This catches
+  every failure mode whatever Apple's error says, including ones that are not auth
+  failures at all. `null` only when the backend is disabled.
+- **`auth_required`** — the backend needs a human: a dead session, changed password,
+  unaccepted iCloud terms, a refused sign-in. For `findmy` it is also true whenever the
+  service has no logged-in session, before any fetch has run.
+
+`retry_in_s` is how long until the backend tries Apple again after failures, or `null`
+if it is not backing off. A failure counts as a fetch for the minimum interval; repeated
+failures double the wait, up to 6 hours; a failure only a human can fix waits the full 6
+hours straight away, since retrying cannot clear it and each retry is a failed login on
+Apple's books. A successful `/login` lifts it. `?force=true` on `/devices` overrides it.
+
+The field to graph is `location_age_s` per device, since that captures "her keys haven't
+been seen in three hours", which is the signal that actually matters.
 
 `enabled` means the backend has something to do: for `findmy`, that accessory keys
 loaded; for `fmip`, that `FINDMY_REST_ENABLE_FMIP` is set.
@@ -335,8 +353,11 @@ directory is probably not persistent.
 curl -X POST http://localhost:8080/login -H 'content-type: application/json' -d '{}'
 ```
 
-Body is optional; `{"password": "..."}` overrides `FINDMY_REST_PASSWORD`. Returns the
-login state and, when 2FA is required, the available methods:
+Body is optional; `{"password": "..."}` overrides `FINDMY_REST_PASSWORD`. Calling it
+always starts a fresh login: a saved session that still *claims* to be logged in — as one
+does after a password change revokes its tokens — is discarded first. The anisette
+identity is kept; only the account session is replaced. Returns the login state and,
+when 2FA is required, the available methods:
 
 ```json
 {"state": "LoginState.REQUIRE_2FA",

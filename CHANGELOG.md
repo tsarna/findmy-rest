@@ -5,6 +5,47 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-10-25
+
+Reliability fixes from the 2026-09/10 outages, during which `/health` reported
+`ok: true, auth_required: false` throughout.
+
+### Added
+
+- **`last_success_age_s`** per backend in `/health`: seconds since the last successful
+  fetch, counted from process start when there has been none, so "never worked" is a
+  large number rather than a `null`. Alert on this; it catches any failure whatever
+  Apple's error says. `null` only when the backend is disabled.
+- **`retry_in_s`** per backend in `/health`: how long until the next attempt after
+  failures, or `null` when not backing off.
+
+### Fixed
+
+- **A failing backend no longer retries Apple on every request.** A failure never
+  counted as a fetch, and both backends skipped their minimum interval whenever nothing
+  was cached — which is exactly the state of a backend that has never succeeded. From
+  2026-09-14 the iCloud backend therefore attempted a full login on every request, ~287
+  failed logins a day for five weeks. Now a failure counts against the floor, repeated
+  failures back off exponentially (capped at 6 hours) and reset on success, and a
+  failure only a human can fix backs off to the cap at once. A successful `/login` lifts
+  the backoff; `?force=true` overrides it.
+- **Auth failures are recognised by exception type, not by searching the message for
+  "2fa" or "login".** None of the real failures matched — "You must accept the updated
+  terms of service", "Re-authentication required", GSA refusals — so `auth_required`
+  never went true and the existing alert on it never fired. `findmy.auth_required` now
+  also reflects the session itself, so a cold start with no session reports it before
+  any fetch has run.
+- **`/login` recovers a session that died while still marked logged in.** FindMy.py
+  refuses to log in an account whose saved state says `LOGGED_IN`, which is what a
+  password change leaves behind, so `/login` returned 500 and the only fix was editing
+  the state on disk. It now discards the stale account session and starts afresh on the
+  same anisette identity.
+- **Memory is released after each accessory key walk** (`malloc_trim`). A walk for a
+  silent accessory holds the whole window's keys at once, and glibc kept the freed
+  memory, so RSS ratcheted up to each walk's high-water mark and hit a 512 Mi limit
+  every 7–8 hours. Verified on glibc: 74 MiB of 80 MiB freed returned to the OS.
+  Pair with `MALLOC_ARENA_MAX=2` in the container environment.
+
 ## [0.5.1] - 2026-10-24
 
 ### Fixed

@@ -17,8 +17,10 @@ from pathlib import Path
 
 from findmy import FindMyAccessory
 
+from .. import memory
 from ..alignment import AlignmentStore
 from ..config import Settings
+from ..failures import Backoff, is_auth_failure
 from ..models import (
     BackendHealth,
     Device,
@@ -47,7 +49,9 @@ class AccessoryBackend:
         self._stems: dict[int, str] = {}
         self._alignment = AlignmentStore(settings.alignment_cache)
         self._cache: list[Device] = []
+        # Last *attempt*, successful or not: a failure counts against the floor.
         self._fetched_at: float = 0.0
+        self.backoff = Backoff()
         self._refresh: asyncio.Task | None = None
         # Accrued polling budget for accessories that cost more than one cycle.
         self._credits: dict[str, float] = {}
@@ -190,8 +194,13 @@ class AccessoryBackend:
         if not self._accessories:
             return []
 
+        # Gated on the last attempt, not on having a cache: `not self._cache` made a
+        # backend that had never succeeded refetch -- i.e. retry Apple -- on every
+        # request. `force` is an operator asking explicitly, so it overrides the
+        # backoff too.
         age = time.monotonic() - self._fetched_at
-        stale = force or not self._cache or age >= self._settings.min_fetch_interval_s
+        due = age >= self._settings.min_fetch_interval_s and self.backoff.ready()
+        stale = force or due
         if stale and (self._refresh is None or self._refresh.done()):
             self._refresh = asyncio.create_task(self._do_fetch())
         if wait and self._refresh is not None:
@@ -264,8 +273,9 @@ class AccessoryBackend:
         try:
             account = await self._session.account()
         except AuthRequiredError as exc:
-            self.health.auth_required = True
-            self.health.last_error = str(exc)
+            # No Apple contact happened, but nothing will change until someone
+            # logs in, and reauthenticated() lifts the backoff when they do.
+            self._failed(exc, auth=True)
             self.health.refreshing = False
             return self._cache
 
@@ -280,15 +290,19 @@ class AccessoryBackend:
 
         try:
             results = await account.fetch_location(selected)
-        except Exception as exc:
-            logger.exception("accessory fetch failed")
-            self.health.last_error = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:  # noqa: BLE001 - logged with traceback in _failed()
             # An expired session shows up here; flag it so /health surfaces it.
-            if "auth" in str(exc).lower() or "401" in str(exc):
-                self.health.auth_required = True
+            # The "401" check covers a fetch error that arrives as a bare HTTP
+            # failure rather than as one of FindMy.py's typed errors.
+            auth = is_auth_failure(exc) or "401" in str(exc)
+            self._failed(exc, auth=auth)
+            if auth:
                 self._session.auth_required = True
             self.health.refreshing = False
             return self._cache
+        finally:
+            # The walk's keys are garbage now; give their memory back.
+            await asyncio.to_thread(memory.trim)
 
         devices = self._merge(selected, results)
 
@@ -300,6 +314,7 @@ class AccessoryBackend:
                 self._alignment.record(stem, accessory)
         self._alignment.save()
 
+        self.backoff.succeeded()
         self._cache = devices
         self._fetched_at = time.monotonic()
         self.health.refreshing = False
@@ -309,6 +324,28 @@ class AccessoryBackend:
         self.health.last_fetch = datetime.now(tz=timezone.utc)
         self._session.save()  # session state moves on every successful fetch
         return devices
+
+    def _failed(self, exc: BaseException, *, auth: bool) -> None:
+        delay = self.backoff.failed(self._settings.min_fetch_interval_s, auth=auth)
+        self._fetched_at = time.monotonic()
+        if isinstance(exc, AuthRequiredError):
+            # Expected while logged out; a traceback per cycle would only be noise.
+            logger.warning("accessory fetch skipped: %s; next attempt in %.0fs", exc, delay)
+        else:
+            logger.exception(
+                "accessory fetch failed (%s); next attempt in %.0fs",
+                "needs re-authentication" if auth else "transient",
+                delay,
+            )
+        self.health.last_error = f"{type(exc).__name__}: {exc}"
+        if auth:
+            self.health.auth_required = True
+
+    def reauthenticated(self) -> None:
+        """A login just completed: fetch at the next request, not after the backoff."""
+        self.backoff.succeeded()
+        self._fetched_at = 0.0
+        self.health.auth_required = False
 
     @property
     def cached(self) -> list[Device]:

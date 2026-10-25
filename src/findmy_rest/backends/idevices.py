@@ -28,6 +28,7 @@ import time
 from datetime import datetime, timezone
 
 from ..config import Settings
+from ..failures import Backoff, is_auth_failure
 from ..models import BackendHealth, Device, Kind, Source
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,9 @@ class FmipBackend:
         self._settings = settings
         self._api = None
         self._cache: list[Device] = []
+        # Last *attempt*, successful or not: a failure counts against the floor.
         self._fetched_at: float = 0.0
+        self.backoff = Backoff()
         self.health = BackendHealth(enabled=settings.enable_fmip)
 
     def _connect(self):
@@ -123,21 +126,36 @@ class FmipBackend:
         if not self._settings.enable_fmip:
             return []
 
+        # Gated on the last attempt, not on having a cache. The old `self._cache and
+        # age < floor` meant a backend that had never succeeded -- so had nothing
+        # cached -- skipped the floor entirely and retried a login on every request.
+        # `force` is an operator asking explicitly, so it overrides the backoff too.
         age = time.monotonic() - self._fetched_at
-        if not force and self._cache and age < self._settings.fmip_min_fetch_interval_s:
+        throttled = self._fetched_at and age < self._settings.fmip_min_fetch_interval_s
+        if not force and (throttled or not self.backoff.ready()):
             return self._cache
 
         try:
             # pyicloud is synchronous; keep it off the event loop.
             devices = await asyncio.to_thread(self._fetch_blocking)
         except Exception as exc:
-            logger.exception("fmip fetch failed")
+            auth = is_auth_failure(exc)
+            delay = self.backoff.failed(self._settings.fmip_min_fetch_interval_s, auth=auth)
+            self._fetched_at = time.monotonic()
+            logger.exception(
+                "fmip fetch failed (%s); next attempt in %.0fs",
+                "needs re-authentication" if auth else "transient",
+                delay,
+            )
             self.health.last_error = f"{type(exc).__name__}: {exc}"
-            if "2fa" in str(exc).lower() or "login" in str(exc).lower():
+            if auth:
                 self.health.auth_required = True
+                # Reconnect next time: a fresh PyiCloudService reloads the trusted
+                # session from the cookie directory instead of reusing a dead one.
                 self._api = None
             return self._cache
 
+        self.backoff.succeeded()
         self._cache = devices
         self._fetched_at = time.monotonic()
         self.health.auth_required = False

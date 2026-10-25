@@ -228,6 +228,14 @@ class BackendHealth(BaseModel):
     # They are polled at a rate inversely proportional to their cost, not
     # dropped; their last known position is still served.
     deferred: int = 0
+    # Seconds since the last successful fetch -- counted from process start when
+    # there has been none, so "never worked" is a large number rather than a null
+    # an alert would have to special-case. None only while the backend is off.
+    # This is the signal that would have caught the 2026-09/10 outage whatever
+    # Apple's error said: FMIP sat at last_fetch null for five weeks.
+    last_success_age_s: float | None = None
+    # Seconds until the next attempt after failures, or None if not backing off.
+    retry_in_s: float | None = None
 
 
 class Health(BaseModel):
