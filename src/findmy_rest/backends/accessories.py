@@ -50,7 +50,9 @@ class AccessoryBackend:
         self._alignment = AlignmentStore(settings.alignment_cache)
         self._cache: list[Device] = []
         # Last *attempt*, successful or not: a failure counts against the floor.
-        self._fetched_at: float = 0.0
+        # None until the first one -- not 0.0, which would make "due" depend on
+        # time.monotonic() exceeding the floor, i.e. on how long the host has been up.
+        self._fetched_at: float | None = None
         self.backoff = Backoff()
         self._refresh: asyncio.Task | None = None
         # Accrued polling budget for accessories that cost more than one cycle.
@@ -198,8 +200,10 @@ class AccessoryBackend:
         # backend that had never succeeded refetch -- i.e. retry Apple -- on every
         # request. `force` is an operator asking explicitly, so it overrides the
         # backoff too.
-        age = time.monotonic() - self._fetched_at
-        due = age >= self._settings.min_fetch_interval_s and self.backoff.ready()
+        never = self._fetched_at is None
+        due = (
+            never or time.monotonic() - self._fetched_at >= self._settings.min_fetch_interval_s
+        ) and self.backoff.ready()
         stale = force or due
         if stale and (self._refresh is None or self._refresh.done()):
             self._refresh = asyncio.create_task(self._do_fetch())
@@ -344,7 +348,7 @@ class AccessoryBackend:
     def reauthenticated(self) -> None:
         """A login just completed: fetch at the next request, not after the backoff."""
         self.backoff.succeeded()
-        self._fetched_at = 0.0
+        self._fetched_at = None
         self.health.auth_required = False
 
     @property

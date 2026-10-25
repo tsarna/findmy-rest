@@ -5,10 +5,13 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.2] - 2026-10-25
+## [0.5.3] - 2026-10-25
 
 Reliability fixes from the 2026-09/10 outages, during which `/health` reported
 `ok: true, auth_required: false` throughout.
+
+0.5.2 was tagged but never published: its CI failed on Python 3.10 (see the last
+item under Fixed). 0.5.3 is the same release with that fixed.
 
 ### Added
 
@@ -45,6 +48,11 @@ Reliability fixes from the 2026-09/10 outages, during which `/health` reported
   memory, so RSS ratcheted up to each walk's high-water mark and hit a 512 Mi limit
   every 7–8 hours. Verified on glibc: 74 MiB of 80 MiB freed returned to the OS.
   Pair with `MALLOC_ARENA_MAX=2` in the container environment.
+- **The first fetch no longer depends on how long the host has been up.** "Never
+  fetched" was recorded as timestamp `0.0`, so a backend was due only once
+  `time.monotonic()` -- seconds since boot -- exceeded the minimum interval. A host up
+  for less than a minute never started its first fetch. Caught by CI on a freshly
+  booted runner; production nodes' long uptimes would have hidden it.
 
 ## [0.5.1] - 2026-10-24
 

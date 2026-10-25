@@ -45,7 +45,8 @@ class FmipBackend:
         self._api = None
         self._cache: list[Device] = []
         # Last *attempt*, successful or not: a failure counts against the floor.
-        self._fetched_at: float = 0.0
+        # None until the first one, so the floor never depends on host uptime.
+        self._fetched_at: float | None = None
         self.backoff = Backoff()
         self.health = BackendHealth(enabled=settings.enable_fmip)
 
@@ -130,8 +131,10 @@ class FmipBackend:
         # age < floor` meant a backend that had never succeeded -- so had nothing
         # cached -- skipped the floor entirely and retried a login on every request.
         # `force` is an operator asking explicitly, so it overrides the backoff too.
-        age = time.monotonic() - self._fetched_at
-        throttled = self._fetched_at and age < self._settings.fmip_min_fetch_interval_s
+        throttled = (
+            self._fetched_at is not None
+            and time.monotonic() - self._fetched_at < self._settings.fmip_min_fetch_interval_s
+        )
         if not force and (throttled or not self.backoff.ready()):
             return self._cache
 

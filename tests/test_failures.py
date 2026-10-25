@@ -214,6 +214,29 @@ async def test_accessory_failure_respects_the_floor(tmp_path):
     assert account.calls == 1
 
 
+@pytest.mark.parametrize("uptime", [5.0, 1e6])
+async def test_first_fetch_runs_however_long_the_host_has_been_up(tmp_path, monkeypatch, uptime):
+    """time.monotonic() counts from boot. Marking "never fetched" as 0.0 made the
+    first fetch wait until the host had been up longer than the floor -- caught by
+    CI on a freshly booted runner; production nodes have long uptimes and hid it."""
+    import findmy_rest.backends.accessories as acc_mod
+    import findmy_rest.backends.idevices as fmip_mod
+    import findmy_rest.failures as failures_mod
+
+    for mod in (acc_mod, fmip_mod):
+        monkeypatch.setattr(mod.time, "monotonic", lambda: uptime)
+    monkeypatch.setattr(failures_mod.time, "monotonic", lambda: uptime)
+
+    backend, account, _ = _accessories(tmp_path, TimeoutError())
+    backend.backoff = Backoff(clock=lambda: uptime)
+    await backend.fetch(wait=True)
+    assert account.calls == 1
+
+    fmip, calls = _fmip(tmp_path, TimeoutError())
+    await fmip.fetch()
+    assert len(calls) == 1
+
+
 async def test_accessory_gsa_refusal_flags_auth_on_backend_and_session(tmp_path):
     backend, account, session = _accessories(
         tmp_path, UnhandledProtocolError("Error response for GSA request: 503")
