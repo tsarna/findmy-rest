@@ -134,6 +134,50 @@ restored on every restart.
 > flight, and only once. That is what makes it safe to wire the 2FA endpoint to an
 > automated SMS handler later: a replayed or unrelated code cannot burn attempts.
 
+If Apple later invalidates the session — a password change does — run the same steps
+again. `/login` discards a saved session that still claims to be logged in and starts
+afresh on the same anisette identity.
+
+### The iCloud backend logs in separately
+
+`FINDMY_REST_ENABLE_FMIP` adds a second, independent Apple session: pyicloud's, in
+`$FINDMY_REST_STATE_DIR/icloud/`. The endpoints above do **not** create it — the
+service has no pyicloud 2FA flow — so it is made once by hand with
+`scripts/fmip_login.py`, run *where the service runs* so it uses the same environment
+and lands in the same state directory. On Kubernetes (the script is not in the image,
+so copy it in):
+
+```console
+$ kubectl exec -i deploy/findmy-rest -- sh -c 'cat > /tmp/fmip_login.py' < scripts/fmip_login.py
+$ kubectl exec deploy/findmy-rest -- python3 -u /tmp/fmip_login.py     # leave running
+[04:04:49] requires_2fa=True requires_2sa=False trusted=False
+[04:04:49] 2FA requested: sent=False via=unknown notice=None
+[04:04:49] WAITING for code in /tmp/fmip-2fa-code (up to 600s)
+```
+
+Apple pushes a sign-in prompt with a 6-digit code to the account's trusted Apple
+devices at this point, even when pyicloud reports `sent=False via=unknown` as above.
+From a second terminal, hand the code over:
+
+```console
+$ kubectl exec deploy/findmy-rest -- sh -c 'printf %s 154315 > /tmp/fmip-2fa-code'
+```
+
+```console
+[04:07:34] validate_2fa_code -> True; trusted=True
+[04:07:37] DEVICES OK: 13 devices, 1 with a location
+[04:07:37] DONE
+```
+
+`DEVICES OK` is the line that matters: the script checks the session can actually list
+devices rather than trusting `validate_2fa_code()`'s bool. Existing session files are
+renamed `*.stale-<timestamp>`, not deleted. Then delete `/tmp/fmip_login.py` from the
+pod and enable (or leave enabled) the backend.
+
+When this session dies, the FMIP backend sets `auth_required`, backs off for 6 hours
+between attempts rather than retrying a login on every poll, and `last_success_age_s`
+grows — alert on that. Fix it by running the script again.
+
 ## 4. Read it
 
 ```console
